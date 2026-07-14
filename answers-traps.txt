@@ -1,0 +1,48 @@
+MIT 6.S081 2021 Lab: traps — RISC-V assembly answers
+
+1. The RISC-V calling convention passes the first eight integer or pointer
+   arguments in registers a0 through a7. In this call to printf, a0 holds the
+   format-string address, a1 holds 12 (the result of f(8) + 1), and the value
+   13 is passed in a2. This is visible in call.asm at address 0x24:
+
+       24: 4635                 li      a2,13
+
+2. There is no instruction in main that calls f, and there is no instruction
+   in main that calls g. The compiler inlined and constant-folded the calls:
+   main loads the final value 12 directly into a1 at address 0x26:
+
+       26: 45b1                 li      a1,12
+
+   The separately emitted f function also contains no call to g; g's x + 3
+   operation was inlined into f as an addiw instruction at address 0x14.
+
+3. In the currently generated user/call.asm, printf starts at address 0x628.
+   main reaches it with the jalr instruction at address 0x34:
+
+       34: 5f8080e7             jalr    1528(ra) # 628 <printf>
+
+4. After the jalr at address 0x34 executes, ra is 0x38. The jalr instruction is
+   four bytes long, so it saves the address of the next instruction (0x38) in
+   ra before transferring control to printf.
+
+5. The code prints:
+
+       He110 World
+
+   57616 decimal is 0xe110, so %x prints e110. On a little-endian RISC-V
+   machine, i = 0x00646c72 is stored from its lowest address as the bytes
+   0x72, 0x6c, 0x64, 0x00. Interpreted as a null-terminated string, those bytes
+   are "rld", which completes "Wo%s" as "World".
+
+6. On a big-endian RISC-V machine, i should be 0x726c6400. Big-endian storage
+   places that value in memory as 0x72, 0x6c, 0x64, 0x00, again producing the
+   string "rld". The value 57616 does not need to change: %x formats its
+   numeric value, 0xe110, and the machine's byte order only affects how a
+   multi-byte value is laid out in memory, not that numeric value.
+
+7. For printf("x=%d y=%d", 3), x prints as 3, but the value printed after y=
+   is undefined and unpredictable. The format string requires a second integer
+   argument, but the caller did not provide one. printf will nevertheless read
+   from the register or calling-context location where that argument should
+   have been supplied, so it observes an unspecified residual value rather
+   than any fixed number.
