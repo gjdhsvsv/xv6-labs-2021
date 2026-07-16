@@ -303,7 +303,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -312,19 +311,53 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    if(flags & PTE_W){
+      flags = (flags & ~PTE_W) | PTE_COW;
+      *pte = PA2PTE(pa) | flags;
     }
+    if(mappages(new, i, PGSIZE, pa, flags) != 0)
+      goto err;
+    krefinc(pa);
   }
+  sfence_vma();
   return 0;
 
  err:
   uvmunmap(new, 0, i / PGSIZE, 1);
+  sfence_vma();
   return -1;
+}
+
+// Resolve a copy-on-write mapping at va.
+// Returns 0 on success and -1 if va is not a valid COW page or memory is full.
+int
+cowalloc(pagetable_t pagetable, uint64 va)
+{
+  char *mem;
+  pte_t *pte;
+  uint64 pa;
+  uint flags;
+
+  if(va >= MAXVA)
+    return -1;
+  va = PGROUNDDOWN(va);
+  if((pte = walk(pagetable, va, 0)) == 0)
+    return -1;
+  if((*pte & (PTE_V | PTE_U | PTE_COW)) !=
+     (PTE_V | PTE_U | PTE_COW))
+    return -1;
+
+  pa = PTE2PA(*pte);
+  flags = PTE_FLAGS(*pte);
+  if((mem = kalloc()) == 0)
+    return -1;
+  memmove(mem, (char*)pa, PGSIZE);
+
+  flags = (flags | PTE_W) & ~PTE_COW;
+  *pte = PA2PTE((uint64)mem) | flags;
+  sfence_vma();
+  kfree((void*)pa);
+  return 0;
 }
 
 // mark a PTE invalid for user access.
@@ -346,13 +379,26 @@ uvmclear(pagetable_t pagetable, uint64 va)
 int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
+  pte_t *pte;
   uint64 n, va0, pa0;
 
   while(len > 0){
-    va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if(dstva >= MAXVA)
       return -1;
+    va0 = PGROUNDDOWN(dstva);
+    if((pte = walk(pagetable, va0, 0)) == 0)
+      return -1;
+    if((*pte & (PTE_V | PTE_U)) != (PTE_V | PTE_U))
+      return -1;
+    if(*pte & PTE_COW){
+      if(cowalloc(pagetable, va0) < 0)
+        return -1;
+      if((pte = walk(pagetable, va0, 0)) == 0)
+        return -1;
+    }
+    if((*pte & PTE_W) == 0)
+      return -1;
+    pa0 = PTE2PA(*pte);
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
