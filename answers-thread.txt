@@ -1,0 +1,7 @@
+When two threads insert different nodes into the same bucket concurrently,
+they may both first read the same old list head. Each thread then points its
+new node's next field at that old head. When they write the bucket head back,
+the later write overwrites the earlier one, so the node inserted by the first
+thread is no longer reachable from the hash table. Per-bucket locking prevents
+this lost update while still allowing operations on different buckets to run
+in parallel.

@@ -14,6 +14,10 @@ struct entry {
   struct entry *next;
 };
 struct entry *table[NBUCKET];
+struct bucket_lock {
+  pthread_mutex_t mutex;
+} __attribute__((aligned(64)));
+struct bucket_lock locks[NBUCKET];
 int keys[NKEYS];
 int nthread = 1;
 
@@ -41,6 +45,8 @@ void put(int key, int value)
 {
   int i = key % NBUCKET;
 
+  pthread_mutex_lock(&locks[i].mutex);
+
   // is the key already present?
   struct entry *e = 0;
   for (e = table[i]; e != 0; e = e->next) {
@@ -55,6 +61,7 @@ void put(int key, int value)
     insert(key, value, &table[i], table[i]);
   }
 
+  pthread_mutex_unlock(&locks[i].mutex);
 }
 
 static struct entry*
@@ -62,12 +69,14 @@ get(int key)
 {
   int i = key % NBUCKET;
 
+  pthread_mutex_lock(&locks[i].mutex);
 
   struct entry *e = 0;
   for (e = table[i]; e != 0; e = e->next) {
     if (e->key == key) break;
   }
 
+  pthread_mutex_unlock(&locks[i].mutex);
   return e;
 }
 
@@ -112,6 +121,9 @@ main(int argc, char *argv[])
   }
   nthread = atoi(argv[1]);
   tha = malloc(sizeof(pthread_t) * nthread);
+  for (int i = 0; i < NBUCKET; i++) {
+    assert(pthread_mutex_init(&locks[i].mutex, NULL) == 0);
+  }
   srandom(0);
   assert(NKEYS % nthread == 0);
   for (int i = 0; i < NKEYS; i++) {
