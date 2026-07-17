@@ -119,6 +119,8 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  memset(p->vmas, 0, sizeof(p->vmas));
+  p->mmap_top = TRAPFRAME;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -257,6 +259,8 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    if((uint64)n > p->mmap_top - sz)
+      return -1;
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
@@ -299,6 +303,13 @@ fork(void)
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
+  np->mmap_top = p->mmap_top;
+  for(i = 0; i < NVMA; i++){
+    if(p->vmas[i].used){
+      np->vmas[i] = p->vmas[i];
+      np->vmas[i].file = filedup(p->vmas[i].file);
+    }
+  }
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
@@ -343,6 +354,10 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  // Mapped pages must be written back and removed before the page table
+  // is eventually freed by wait().
+  vmaexit(p);
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
